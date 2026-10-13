@@ -216,6 +216,6 @@ table.rows .money-in.sm { width: 130px; }
 table.rows input[type=radio], table.rows input[type=checkbox] { width: 18px; height: 18px; }
 .row-add { padding: 10px 0 0; }
 .due.recur { cursor: pointer; grid-template-columns: 70px 1fr auto auto; }
-.due.due { background: #fff6df; }
+.due.soon { background: #fff6df; }
 .b-actions.nowrap { flex-wrap: nowrap; margin-top: 0; }
 .week { gap: 6px; }
