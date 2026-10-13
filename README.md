@@ -17,6 +17,8 @@ cp -R dist/Cashmere2-darwin-arm64/Cashmere2.app ~/Desktop/
 
 Open `Cashmere2.app` from the Desktop. If macOS says it can't check the developer, right-click the app and choose Open the first time.
 
+See [HOWTO.md](HOWTO.md) for a full walkthrough.
+
 Your data lives in `~/Documents/Cashmere2/ledger.json`, with a backup next to it and a dated copy per day in `backups/`. Delete that folder for a fresh start.
 
 ## How it works
