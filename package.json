@@ -1,0 +1,17 @@
+{
+  "name": "cashmere2",
+  "productName": "Cashmere2",
+  "version": "1.0.0",
+  "description": "A cozy, bucketed budget for anyone: your accounts, your buckets, your goals. Everything stays on your Mac.",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "package:intel": "electron-packager . Cashmere2 --platform=darwin --arch=x64 --out=dist --overwrite --icon=build/icon.icns --app-bundle-id=com.marinka.cashmere2 --ignore='^/dist' --ignore='^/build/icon\\.iconset'",
+    "package": "electron-packager . Cashmere2 --platform=darwin --arch=arm64 --out=dist --overwrite --icon=build/icon.icns --app-bundle-id=com.marinka.cashmere2 --ignore='^/dist' --ignore='^/build/icon\\.iconset'"
+  },
+  "devDependencies": {
+    "electron": "33.2.0",
+    "@electron/packager": "18.3.5"
+  }
+}

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>Cashmere2</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="drag-strip"></div>
+    <div class="logo">
+      <span class="wordmark">Cashmere</span>
+      <span class="sub">your buckets, your rules</span>
+    </div>
+    <nav id="nav">
+      <button type="button" data-view="home"><i>01</i> Overview</button>
+      <button type="button" data-view="expenses"><i>02</i> Expenses</button>
+      <button type="button" data-view="recurring"><i>03</i> Recurring</button>
+      <button type="button" data-view="buckets"><i>04</i> Buckets</button>
+      <button type="button" data-view="goals"><i>05</i> Goals</button>
+      <button type="button" data-view="paychecks"><i>06</i> Paychecks</button>
+      <button type="button" data-view="loans"><i>07</i> Loans</button>
+      <button type="button" data-view="accounts"><i>08</i> Accounts</button>
+      <button type="button" data-view="settings"><i>09</i> The Vault</button>
+    </nav>
+    <div class="side-foot" id="sideFoot"></div>
+  </aside>
+  <main id="main" class="main" tabindex="-1"></main>
+</div>
+<dialog id="dlg"></dialog>
+<canvas id="confetti" aria-hidden="true"></canvas>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<script src="app.js"></script>
+</body>
+</html>
