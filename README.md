@@ -29,7 +29,7 @@ Your data lives in `~/Documents/Cashmere2/ledger.json`, with a backup next to it
 - **Expenses**: log purchases weekly with a category and the bucket they came out of. A card purchase drops the bucket and raises the card's owed balance right away.
 - **Recurring**: subscriptions and the things you buy over and over, each with a cost and a rhythm (every 5 days, every 6 weeks, every month). You see the next date, the true per-month cost, and "Bought it" logs the expense and rolls the date forward.
 - **Paychecks**: enter what landed, fill buckets from your per-paycheck plan or decide on the spot, and the rest goes to Unsorted.
-- **Goals**: a number you want to hit, watching one bucket, all savings, cash minus debt, or a loan payoff. Shows how much to go and the pace needed.
+- **Goals**: slices inside a bucket that you set aside on purpose, like Flights and Tickets inside a trip bucket. Only money you put into a goal counts. Shows how much to go and the pace needed.
 - **Loans**: balance, rate, monthly payment, due day, payoff estimate, and which bucket funds it.
 - **Gamified lightly**: a weekly logging streak, XP, levels, and a few badges.
 

@@ -80,8 +80,15 @@ function acc(id) { return S.db.accounts.find((a) => a.id === id); }
 function bucket(id) { return S.db.buckets.find((b) => b.id === id); }
 function loan(id) { return S.db.loans.find((l) => l.id === id); }
 function goal(id) { return S.db.goals.find((g) => g.id === id); }
-function goalForBucket(bucketId) { return S.db.goals.find((g) => g.source?.type === "bucket" && g.source.id === bucketId); }
-const GOAL_SOURCES = [["bucket", "One bucket"], ["savings", "All savings buckets"], ["net", "Cash minus card debt"], ["loan", "Pay off a loan"]];
+function goalsForBucket(bucketId) { return S.db.goals.filter((g) => g.bucketId === bucketId); }
+// "Comes out of" options: buckets, with each bucket's goals indented under it (value "goal:<id>").
+function outOfOptions(kindsFirst = []) {
+  const out = [["", "— no bucket (Unsorted)"]];
+  const bs = [...activeBuckets()].sort((a, b) => (kindsFirst.indexOf(b.kind) >= 0) - (kindsFirst.indexOf(a.kind) >= 0));
+  for (const b of bs) { out.push([b.id, b.emoji + " " + b.name]); for (const g of goalsForBucket(b.id)) out.push(["goal:" + g.id, "\u00a0\u00a0\u00a0↳ " + g.emoji + " " + g.name]); }
+  return out;
+}
+function parseOutOf(v) { if (v && String(v).startsWith("goal:")) { const g = goal(v.slice(5)); return { bucketId: g?.bucketId || null, goalId: g ? g.id : null }; } return { bucketId: v || null, goalId: null }; }
 function cashAccounts() { return S.db.accounts.filter((a) => a.kind === "cash"); }
 function cardAccounts() { return S.db.accounts.filter((a) => a.kind === "card"); }
 function activeBuckets() { return S.db.buckets.filter((b) => !b.archived); }
@@ -99,6 +106,11 @@ function derive() {
   const acct = Object.fromEntries(db.accounts.map((a) => [a.id, 0]));
   const bkt = Object.fromEntries(db.buckets.map((b) => [b.id, 0]));
   const ln = Object.fromEntries(db.loans.map((l) => [l.id, 0]));
+  const galloc = Object.fromEntries((db.goals || []).map((g) => [g.id, 0]));
+  const gspent = Object.fromEntries((db.goals || []).map((g) => [g.id, 0]));
+  const ginflow = {};
+  const recentFrom = addDays(todayStr(), -56);
+  const gIn = (t, gid, v) => { if (gid && t.date >= recentFrom && v > 0) ginflow[gid] = (ginflow[gid] || 0) + v; };
   const isCard = (id) => acc(id)?.kind === "card";
   const add = (o, k, v) => { if (k in o) o[k] += v; };
   let xp = 0, paychecks = 0, expenses = 0, lastPaycheck = null;
@@ -107,13 +119,14 @@ function derive() {
     const a = r2(t.amount);
     switch (t.type) {
       case "opening": case "adjust": add(acct, t.accountId, a); break;
-      case "paycheck": add(acct, t.accountId, a); (t.splits || []).forEach((s) => add(bkt, s.bucketId, r2(s.amount))); xp += XP.paycheck; paychecks++; lastPaycheck = t.date; badges.add("first_paycheck"); break;
-      case "expense": add(acct, t.accountId, isCard(t.accountId) ? a : -a); if (t.bucketId) add(bkt, t.bucketId, -a); xp += XP.expense; expenses++; weeks.add(weekStart(t.date)); break;
+      case "paycheck": add(acct, t.accountId, a); (t.splits || []).forEach((s) => { add(bkt, s.bucketId, r2(s.amount)); if (s.goalId) { add(galloc, s.goalId, r2(s.amount)); gIn(t, s.goalId, r2(s.amount)); } }); xp += XP.paycheck; paychecks++; lastPaycheck = t.date; badges.add("first_paycheck"); break;
+      case "expense": add(acct, t.accountId, isCard(t.accountId) ? a : -a); if (t.bucketId) add(bkt, t.bucketId, -a); if (t.goalId) { add(galloc, t.goalId, -a); add(gspent, t.goalId, a); } xp += XP.expense; expenses++; weeks.add(weekStart(t.date)); break;
       case "cardpay": { const before = acct[t.cardId] || 0; add(acct, t.fromId, -a); add(acct, t.cardId, -a); xp += XP.cardpay; if (before > 0 && a >= before - 0.005) { xp += XP.cardfull; badges.add("full"); } break; }
       case "loanpay": add(ln, t.loanId, -a); add(acct, t.accountId, isCard(t.accountId) ? a : -a); if (t.bucketId) add(bkt, t.bucketId, -a); xp += XP.loanpay; if (t.loanId in ln && ln[t.loanId] <= 0.005) { badges.add("loanfree"); xp += XP.loanfree; } break;
       case "loanset": if (t.loanId in ln) ln[t.loanId] = a; break;
       case "transfer": add(acct, t.fromId, -a); add(acct, t.toId, a); xp += XP.transfer; break;
-      case "allocate": (t.splits || []).forEach((s) => add(bkt, s.bucketId, r2(s.amount))); xp += XP.allocate; break;
+      case "allocate": (t.splits || []).forEach((s) => { add(bkt, s.bucketId, r2(s.amount)); if (s.goalId) { add(galloc, s.goalId, r2(s.amount)); gIn(t, s.goalId, r2(s.amount)); } }); xp += XP.allocate; break;
+      case "earmark": add(galloc, t.goalId, a); gIn(t, t.goalId, a); xp += XP.allocate; break;
     }
   }
   for (const k in acct) acct[k] = r2(acct[k]);
@@ -122,8 +135,12 @@ function derive() {
   const owed = r2(cardAccounts().reduce((s, a) => s + acct[a.id], 0));
   const bucketsTotal = r2(Object.values(bkt).reduce((s, v) => s + v, 0));
   const unsorted = r2(cash - owed - bucketsTotal);
-  const partial = { bkt, ln, cash, owed };
-  for (const g of db.goals || []) if (goalProgress(g, partial).done) { xp += XP.goal; badges.add("goal"); }
+  for (const k in galloc) galloc[k] = r2(galloc[k]);
+  for (const k in ginflow) ginflow[k] = ginflow[k] / 4; // last 8 weeks ≈ 4 paychecks
+  const earmarked = {}; for (const g of db.goals || []) if (g.bucketId) earmarked[g.bucketId] = r2((earmarked[g.bucketId] || 0) + galloc[g.id]);
+  const free = {}; for (const b of db.buckets) free[b.id] = r2(bkt[b.id] - (earmarked[b.id] || 0));
+  const partial = { galloc, gspent };
+  for (const g of db.goals || []) if (goalProgress(g, partial).reached) { xp += XP.goal; badges.add("goal"); }
   if (expenses >= 50) badges.add("fifty");
   // Streak: consecutive weeks with at least one expense logged, counting back from this week (or last week if this one is still empty).
   let streak = 0, w = weekStart(todayStr());
@@ -139,7 +156,7 @@ function derive() {
   const recentInflow = {};
   for (const t of recent) for (const sp of t.splits || []) recentInflow[sp.bucketId] = (recentInflow[sp.bucketId] || 0) + r2(sp.amount);
   for (const k in recentInflow) recentInflow[k] = recentInflow[k] / recent.length;
-  return { avgPaycheck, recentInflow, acct, bkt, ln, cash, owed, bucketsTotal, unsorted, xp, level, lvlFloor, lvlNext, streak, badges, paychecks, expenses, lastPaycheck, nextPayday, thisWeekLogged: weeks.has(weekStart(todayStr())) };
+  return { avgPaycheck, recentInflow, galloc, gspent, ginflow, earmarked, free, acct, bkt, ln, cash, owed, bucketsTotal, unsorted, xp, level, lvlFloor, lvlNext, streak, badges, paychecks, expenses, lastPaycheck, nextPayday, thisWeekLogged: weeks.has(weekStart(todayStr())) };
 }
 
 function planSplits(net) {
@@ -176,29 +193,18 @@ function bucketInflow(b, d) {
   }
   return 0;
 }
-// Where a goal stands. `d` needs bkt, ln, cash, owed (and avgPaycheck/nextPayday for projections).
+// Where a goal stands. A goal is a slice of its bucket: only money set aside for it counts.
 function goalProgress(g, d) {
-  const src = g.source || {};
-  let current = 0, target = Number(g.target) || 0, inflow = 0, perMonth = false;
-  if (src.type === "bucket") { current = d.bkt[src.id] || 0; const b = bucket(src.id); inflow = b ? bucketInflow(b, d) : 0; }
-  else if (src.type === "savings") { for (const b of activeBuckets()) if (b.kind === "savings") { current += d.bkt[b.id] || 0; inflow += bucketInflow(b, d); } }
-  else if (src.type === "net") { current = d.cash - d.owed; }
-  else if (src.type === "loan") { const l = loan(src.id); target = Number(g.start) || 0; current = l ? Math.max(0, target - (d.ln[l.id] || 0)) : 0; inflow = l?.minPayment || 0; perMonth = true; }
-  const remaining = Math.max(0, target - current);
-  const done = target > 0 && current >= target - 0.005;
+  const target = Number(g.target) || 0, alloc = (d.galloc || {})[g.id] || 0, spent = (d.gspent || {})[g.id] || 0;
+  const saved = r2(alloc + spent);
+  const remaining = Math.max(0, r2(target - saved));
+  const reached = target > 0 && saved >= target - 0.005;
+  const used = spent > 0 && spent >= target - 0.005;
   let perPaycheck = null, projected = null;
-  if (!done && g.date) { const days = daysBetween(todayStr(), g.date); perPaycheck = days < 0 ? null : remaining / Math.max(1, Math.floor(days / 14)); }
-  if (!done && inflow > 0) {
-    const n = Math.ceil(remaining / inflow);
-    projected = perMonth ? nextDue(loan(src.id)?.dueDay || 1, addDays(todayStr(), 30 * (n - 1))) : addDays(d.nextPayday && d.nextPayday >= todayStr() ? d.nextPayday : todayStr(), 14 * (n - 1));
-  }
-  return { current, target, remaining, done, pct: pct(current, target), perPaycheck, projected, inflow, perMonth };
-}
-function sourceLabel(g) {
-  const src = g.source || {};
-  if (src.type === "bucket") { const b = bucket(src.id); return b ? b.emoji + " " + b.name : "deleted bucket"; }
-  if (src.type === "loan") { const l = loan(src.id); return l ? "🎓 " + l.name : "deleted loan"; }
-  return GOAL_SOURCES.find(([k]) => k === src.type)?.[1] || "";
+  if (!reached && g.date) { const days = daysBetween(todayStr(), g.date); perPaycheck = days < 0 ? null : remaining / Math.max(1, Math.floor(days / 14)); }
+  const inflow = (d.ginflow || {})[g.id] || 0;
+  if (!reached && inflow > 0) { const n = Math.ceil(remaining / inflow); projected = addDays(d.nextPayday && d.nextPayday >= todayStr() ? d.nextPayday : todayStr(), 14 * (n - 1)); }
+  return { target, alloc, spent, saved, remaining, reached, done: reached, used, pct: pct(saved, target), perPaycheck, projected, inflow };
 }
 // What a bill bucket needs to hold each month: its own amount, or the loan minimums it funds, whichever is larger.
 function billNeed(b) {
@@ -260,14 +266,14 @@ function fieldHtml(f) {
   }
   return `<label class="${f.half ? "half" : ""}"><span class="lbl">${esc(f.label)}</span>${input}${f.help ? `<small>${f.help}</small>` : ""}</label>`;
 }
-function formDialog({ title, intro, fields, submit = "Save", danger, validate, wide }) {
+function formDialog({ title, intro, fields, submit = "Save", danger, validate, wide, cancelLabel = "Cancel" }) {
   return new Promise((resolve) => {
     const dlg = $("#dlg");
     dlg.innerHTML = `<form method="dialog" class="form ${wide ? "wide" : ""}" autocomplete="off">
       <h2>${esc(title)}</h2>${intro ? `<p class="intro">${intro}</p>` : ""}
       <div class="fields">${fields.map(fieldHtml).join("")}</div>
       <p class="err" id="formErr"></p>
-      <div class="actions">${danger ? `<button type="button" class="btn danger" data-danger>${esc(danger)}</button>` : ""}<span class="spacer"></span><button type="button" class="btn" data-cancel>Cancel</button><button type="submit" class="btn primary">${esc(submit)}</button></div>
+      <div class="actions">${danger ? `<button type="button" class="btn danger" data-danger>${esc(danger)}</button>` : ""}<span class="spacer"></span><button type="button" class="btn" data-cancel>${esc(cancelLabel)}</button><button type="submit" class="btn primary">${esc(submit)}</button></div>
     </form>`;
     const form = $("form", dlg);
     let done = false;
@@ -364,14 +370,14 @@ const act = {};
 act.expense = async (el) => {
   const d = derive();
   const existing = el?.dataset?.id ? S.db.transactions.find((t) => t.id === el.dataset.id) : null;
-  const presetBucket = el?.dataset?.bucket || "";
+  const presetBucket = el?.dataset?.goal ? "goal:" + el.dataset.goal : el?.dataset?.bucket || "";
   const v = await formDialog({
     title: existing ? "Edit expense" : "Log an expense",
     fields: [
       { key: "amount", label: "Amount", type: "money", value: existing?.amount ?? "", required: true, half: true },
       { key: "date", label: "Date", type: "date", value: existing?.date || todayStr(), required: true, half: true },
       { key: "accountId", label: "Paid with", type: "select", options: payWithOptions(), value: existing?.accountId || cardAccounts()[0]?.id, half: true },
-      { key: "bucketId", label: "Comes out of", type: "select", options: bucketOptions(["spending", "bill"]), value: existing?.bucketId || presetBucket || activeBuckets().find((b) => b.kind === "spending")?.id || "", half: true },
+      { key: "bucketId", label: "Comes out of", type: "select", options: outOfOptions(["spending", "bill"]), value: existing ? (existing.goalId ? "goal:" + existing.goalId : existing.bucketId || "") : presetBucket || activeBuckets().find((b) => b.kind === "spending")?.id || "", half: true },
       { key: "category", label: "Category", type: "chips", options: cats(), value: existing?.category || cats()[0]?.[0] || "" },
       { key: "note", label: "What was it?", type: "text", value: existing?.note || "", placeholder: "groceries, dinner with friends, new shoes…", max: 120 },
     ],
@@ -381,9 +387,10 @@ act.expense = async (el) => {
   });
   if (!v) return;
   if (v.__delete) { S.db.transactions = S.db.transactions.filter((t) => t.id !== existing.id); return save({ msg: "Expense deleted" }); }
-  if (existing) Object.assign(existing, { amount: r2(v.amount), date: v.date, accountId: v.accountId, bucketId: v.bucketId || null, category: v.category || cats()[0]?.[0] || "", note: v.note });
-  else addTx({ type: "expense", amount: r2(v.amount), date: v.date, accountId: v.accountId, bucketId: v.bucketId || null, category: v.category || cats()[0]?.[0] || "", note: v.note });
-  const b = v.bucketId ? bucket(v.bucketId) : null;
+  const outOf = parseOutOf(v.bucketId);
+  if (existing) Object.assign(existing, { amount: r2(v.amount), date: v.date, accountId: v.accountId, bucketId: outOf.bucketId, goalId: outOf.goalId, category: v.category || cats()[0]?.[0] || "", note: v.note });
+  else addTx({ type: "expense", amount: r2(v.amount), date: v.date, accountId: v.accountId, bucketId: outOf.bucketId, goalId: outOf.goalId, category: v.category || cats()[0]?.[0] || "", note: v.note });
+  const b = outOf.bucketId ? bucket(outOf.bucketId) : null;
   const left = b ? d.bkt[b.id] - r2(v.amount) : null;
   await save({ xp: existing ? 0 : XP.expense, msg: existing ? "Saved" : b ? money0(Math.max(0, left)) + " left in " + b.name : "Logged" });
 };
@@ -395,7 +402,7 @@ act.paycheck = async () => {
   const bs = activeBuckets();
   const html = `<form method="dialog" class="form wide" autocomplete="off">
     <h2>Log a paycheck</h2>
-    <p class="intro">Enter what actually landed (after benefits and taxes). Buckets with a plan are filled in; the rest are yours to decide this check. Anything you leave blank stays in Unsorted and you can sort it later.</p>
+    <p class="intro">Enter what actually landed (after benefits and taxes). Buckets with a plan are filled in; the rest are yours to decide this check. Put money straight into a goal on its ↳ row. Anything you leave blank stays in Unsorted and you can sort it later.</p>
     <div class="fields">
       <label class="half"><span class="lbl">Net amount</span><div class="money-in"><span>$</span><input id="pcAmt" type="number" step="0.01" min="0" inputmode="decimal" required></div></label>
       <label class="half"><span class="lbl">Date</span><input id="pcDate" type="date" value="${todayStr()}" required></label>
@@ -403,7 +410,7 @@ act.paycheck = async () => {
       <label class="half"><span class="lbl">Note</span><input id="pcNote" type="text" placeholder="Oct 1–14 · 68 hrs" maxlength="80"></label>
     </div>
     <table class="split"><thead><tr><th>Bucket</th><th>Plan</th><th>Now holds</th><th>Add</th></tr></thead><tbody>
-      ${bs.map((b) => { const g = goalForBucket(b.id); const gp = g ? goalProgress(g, d) : null; const hint = b.plan ? planLabel(b) : gp && !gp.done && gp.perPaycheck !== null ? "goal needs ~" + money0(gp.perPaycheck) + " / check" : d.recentInflow[b.id] ? "usually ~" + money0(d.recentInflow[b.id]) : "your call"; return `<tr><td>${esc(b.emoji)} ${esc(b.name)}</td><td class="muted">${esc(hint)}</td><td class="num muted">${money(d.bkt[b.id])}</td><td><div class="money-in sm"><span>$</span><input type="number" step="0.01" min="0" data-split="${b.id}" value=""></div></td></tr>`; }).join("")}
+      ${bs.map((b) => { const hint = b.plan ? planLabel(b) : d.recentInflow[b.id] ? "usually ~" + money0(d.recentInflow[b.id]) : "your call"; const row = `<tr><td>${esc(b.emoji)} ${esc(b.name)}</td><td class="muted">${esc(hint)}</td><td class="num muted">${money(d.bkt[b.id])}</td><td><div class="money-in sm"><span>$</span><input type="number" step="0.01" min="0" data-split="${b.id}" value=""></div></td></tr>`; const grows = goalsForBucket(b.id).map((g) => { const gp = goalProgress(g, d); const gh = gp.reached ? "fully funded" : gp.perPaycheck !== null ? "needs ~" + money0(gp.perPaycheck) + " / check" : money0(gp.remaining) + " to go"; return `<tr class="goal-row"><td>&nbsp;&nbsp;&nbsp;↳ ${esc(g.emoji)} ${esc(g.name)}</td><td class="muted">${esc(gh)}</td><td class="num muted">${money(gp.alloc)}</td><td><div class="money-in sm"><span>$</span><input type="number" step="0.01" min="0" data-split="${b.id}" data-goal="${g.id}" value=""></div></td></tr>`; }).join(""); return row + grows; }).join("")}
     </tbody></table>
     <div class="split-foot"><span>Allocated <b id="pcUsed">$0.00</b></span><span>To Unsorted <b id="pcRest">$0.00</b></span></div>
     <p class="err" id="formErr"></p>
@@ -417,13 +424,13 @@ act.paycheck = async () => {
       let u = 0; inputs.forEach((i) => (u += Number(i.value) || 0));
       used.textContent = money(u); rest.textContent = money(net - u); rest.parentElement.classList.toggle("bad", net - u < -0.005);
     };
-    amt.addEventListener("input", () => { const net = Number(amt.value) || 0; const splits = planSplits(net); inputs.forEach((i) => { const s = splits.find((x) => x.bucketId === i.dataset.split); i.value = s ? s.amount : ""; }); recompute(); });
+    amt.addEventListener("input", () => { const net = Number(amt.value) || 0; const splits = planSplits(net); inputs.forEach((i) => { const s = i.dataset.goal ? null : splits.find((x) => x.bucketId === i.dataset.split); i.value = s ? s.amount : ""; }); recompute(); });
     inputs.forEach((i) => i.addEventListener("input", recompute));
     $("form", dlg).onsubmit = (e) => {
       e.preventDefault();
       const net = r2(amt.value);
       if (!(net > 0)) { err.textContent = "Enter the paycheck amount."; return; }
-      const splits = inputs.map((i) => ({ bucketId: i.dataset.split, amount: r2(i.value) })).filter((s) => s.amount > 0);
+      const splits = inputs.map((i) => ({ bucketId: i.dataset.split, ...(i.dataset.goal ? { goalId: i.dataset.goal } : {}), amount: r2(i.value) })).filter((s) => s.amount > 0);
       const u = splits.reduce((s, x) => s + x.amount, 0);
       if (u > net + 0.005) { err.textContent = "You've allocated " + money(u - net) + " more than the paycheck. Use Sort money if you want to pull from Unsorted."; return; }
       finish({ net, date: $("#pcDate", dlg).value, accountId: $("#pcAcct", dlg).value, note: $("#pcNote", dlg).value.trim(), splits });
@@ -464,6 +471,7 @@ act.sort = async (el) => {
       const delta = splits.reduce((s, x) => s + x.amount, 0);
       if (d.unsorted - delta < -0.005) { err.textContent = "That would make Unsorted negative by " + money(delta - d.unsorted) + ". Take it from another bucket instead."; return; }
       for (const s of splits) if (d.bkt[s.bucketId] + s.amount < -0.005) { err.textContent = bucket(s.bucketId).name + " can't go below zero."; return; }
+      for (const s of splits) { const em = d.earmarked[s.bucketId] || 0; if (em > 0 && d.bkt[s.bucketId] + s.amount < em - 0.005) { err.textContent = bucket(s.bucketId).name + " has " + money0(em) + " set aside for goals. Take it back from the goals first."; return; } }
       finish(splits);
     };
   });
@@ -598,7 +606,7 @@ act.editBucket = async (el) => {
     validate: (v) => (!v.name ? "Give it a name." : (v.planMode === "amount" || v.planMode === "percent") && !(v.planValue > 0) ? "Enter the per-paycheck amount or percent." : v.planMode === "percent" && v.planValue > 100 ? "Percent can't exceed 100." : null),
   });
   if (!v) return;
-  if (v.__delete) { S.db.buckets = S.db.buckets.filter((x) => x.id !== b.id); S.db.loans.forEach((l) => { if (l.bucketId === b.id) l.bucketId = null; }); S.db.goals = S.db.goals.filter((g) => !(g.source?.type === "bucket" && g.source.id === b.id)); return save({ msg: "Bucket deleted; its money is now Unsorted" }); }
+  if (v.__delete) { S.db.buckets = S.db.buckets.filter((x) => x.id !== b.id); S.db.loans.forEach((l) => { if (l.bucketId === b.id) l.bucketId = null; }); S.db.goals = S.db.goals.filter((g) => g.bucketId !== b.id); return save({ msg: "Bucket deleted; its money is now Unsorted" }); }
   const plan = v.planMode === "remainder" ? { remainder: true } : v.planMode === "none" ? null : { mode: v.planMode, value: r2(v.planValue) };
   if (plan?.remainder) S.db.buckets.forEach((x) => { if (x.plan?.remainder && x !== b) x.plan = null; });
   const data = { emoji: v.emoji || "🪣", name: v.name, kind: v.kind || "savings", plan, bill: v.billAmount > 0 || v.billDay ? { amount: r2(v.billAmount || 0), dueDay: v.billDay ? Math.max(1, Math.min(31, v.billDay)) : null } : null, note: v.note };
@@ -626,7 +634,7 @@ act.editLoan = async (el) => {
     validate: (v) => (!v.name ? "Give it a name." : v.balance === null || v.balance < 0 ? "Enter the balance." : null),
   });
   if (!v) return;
-  if (v.__delete) { S.db.loans = S.db.loans.filter((x) => x.id !== l.id); S.db.goals = S.db.goals.filter((g) => !(g.source?.type === "loan" && g.source.id === l.id)); return save({ msg: "Loan deleted" }); }
+  if (v.__delete) { S.db.loans = S.db.loans.filter((x) => x.id !== l.id); return save({ msg: "Loan deleted" }); }
   const data = { name: v.name, original: v.original > 0 ? r2(v.original) : null, rate: Number(v.rate) || 0, minPayment: r2(v.minPayment || 0), dueDay: Math.max(1, Math.min(31, v.dueDay || 1)), bucketId: v.bucketId || null, accountId: v.accountId };
   if (l) {
     Object.assign(l, data);
@@ -641,33 +649,56 @@ act.editLoan = async (el) => {
 
 act.editGoal = async (el) => {
   const g = el?.dataset?.goal ? goal(el.dataset.goal) : null;
-  const d = derive();
+  const preset = el?.dataset?.bucket || "";
   const bucketOpts = activeBuckets().map((b) => [b.id, b.emoji + " " + b.name]);
-  const loanOpts = S.db.loans.map((l) => [l.id, l.name]);
+  if (!bucketOpts.length) return toast("Make a bucket first; goals live inside buckets.");
   const v = await formDialog({
     title: g ? "Edit goal" : "New goal",
-    intro: g ? "" : "A goal is a number you want to hit, even if you're nowhere near it yet. Pick what it measures and Cashmere tracks the pace.",
+    intro: g ? "" : "A goal is a slice of a bucket: Flights inside your trip bucket, a new laptop inside Savings. Only money you set aside for it counts, so you decide what goes where.",
     fields: [
       { key: "emoji", label: "Emoji", type: "text", value: g?.emoji || "🎯", max: 4, half: true },
-      { key: "name", label: "Name", type: "text", value: g?.name || "", required: true, max: 50, half: true, placeholder: "Emergency fund, Paris 2027…" },
-      { key: "type", label: "Measures", type: "chips", options: GOAL_SOURCES, value: g?.source?.type || "bucket" },
-      { key: "bucketId", label: "Which bucket", type: "select", options: bucketOpts.length ? bucketOpts : [["", "no buckets yet"]], value: g?.source?.id || "", half: true, help: "for One bucket" },
-      { key: "loanId", label: "Which loan", type: "select", options: loanOpts.length ? loanOpts : [["", "no loans yet"]], value: g?.source?.id || "", half: true, help: "for Pay off a loan" },
-      { key: "target", label: "Target amount", type: "money", value: g?.target ?? "", half: true, help: "Ignored for loans: the target is the balance when you create the goal" },
+      { key: "name", label: "Name", type: "text", value: g?.name || "", required: true, max: 50, half: true, placeholder: "Flights, Tickets, Laptop…" },
+      { key: "bucketId", label: "Inside which bucket", type: "select", options: bucketOpts, value: g?.bucketId || preset || bucketOpts[0][0], half: true },
+      { key: "target", label: "Target amount", type: "money", value: g?.target ?? "", required: true, half: true },
       { key: "date", label: "By when", type: "date", value: g?.date || "", half: true, help: "Optional. Sets the per-paycheck pace." },
       { key: "note", label: "Why it matters", type: "textarea", value: g?.note || "", placeholder: "the thing you'll remember when you're tempted" },
     ],
     submit: g ? "Save" : "Create goal",
     danger: g ? "Delete goal" : null,
-    validate: (v) => (!v.name ? "Give it a name." : v.type === "bucket" && !v.bucketId ? "Pick a bucket." : v.type === "loan" && !v.loanId ? "Pick a loan." : v.type !== "loan" && !(v.target > 0) ? "Enter a target amount." : null),
+    validate: (v) => (!v.name ? "Give it a name." : !v.bucketId ? "Pick a bucket." : !(v.target > 0) ? "Enter a target amount." : null),
   });
   if (!v) return;
-  if (v.__delete) { S.db.goals = S.db.goals.filter((x) => x.id !== g.id); return save({ msg: "Goal deleted" }); }
-  const source = v.type === "bucket" ? { type: "bucket", id: v.bucketId } : v.type === "loan" ? { type: "loan", id: v.loanId } : { type: v.type };
-  const data = { emoji: v.emoji || "🎯", name: v.name, source, target: v.type === "loan" ? 0 : r2(v.target), date: v.date || null, note: v.note };
-  if (v.type === "loan" && (!g || g.source?.type !== "loan" || g.source.id !== v.loanId)) data.start = d.ln[v.loanId] || 0;
+  if (v.__delete) { S.db.goals = S.db.goals.filter((x) => x.id !== g.id); return save({ msg: "Goal deleted; its money is back in the bucket" }); }
+  const data = { emoji: v.emoji || "🎯", name: v.name, bucketId: v.bucketId, target: r2(v.target), date: v.date || null, note: v.note };
   if (g) Object.assign(g, data); else S.db.goals.push({ id: uid(), created: todayStr(), ...data });
-  await save({ msg: g ? "Saved" : "Goal set" });
+  await save({ msg: g ? "Saved" : "Goal set. Now put some money in it." });
+};
+
+// Move money into or out of a goal, within its bucket (or pulled in from Unsorted).
+act.fundGoal = async (el) => {
+  const g = goal(el.dataset.goal);
+  const b = bucket(g.bucketId);
+  if (!b) return toast("Give this goal a bucket first.");
+  const d = derive();
+  const gp = goalProgress(g, d);
+  const free = d.free[b.id] || 0;
+  const v = await formDialog({
+    title: "Fund " + g.name,
+    intro: `${esc(b.emoji)} ${esc(b.name)} holds <b>${money(d.bkt[b.id])}</b>, of which <b>${money(free)}</b> isn't set aside for anything. Unsorted has <b>${money(d.unsorted)}</b>. ${esc(g.name)} has <b>${money(gp.alloc)}</b> so far${gp.remaining > 0 ? ", " + money0(gp.remaining) + " to go" : ""}.`,
+    fields: [
+      { key: "amount", label: "Amount", type: "money", value: Math.max(0, Math.min(gp.remaining, Math.max(free, 0))) || "", required: true, half: true },
+      { key: "mode", label: "Do what", type: "chips", options: [["free", "Set aside from " + b.name], ["unsorted", "Pull from Unsorted"], ["back", "Take back into " + b.name]], value: free > 0.005 ? "free" : d.unsorted > 0.005 ? "unsorted" : "free" },
+    ],
+    submit: "Apply",
+    validate: (v) => (!(v.amount > 0) ? "Enter an amount." : v.mode === "free" && v.amount > free + 0.005 ? "Only " + money(free) + " in " + b.name + " isn't earmarked. Pull from Unsorted, or take some back from another goal." : v.mode === "unsorted" && v.amount > d.unsorted + 0.005 ? "Unsorted only has " + money(d.unsorted) + "." : v.mode === "back" && v.amount > gp.alloc + 0.005 ? "This goal only has " + money(gp.alloc) + " set aside." : null),
+  });
+  if (!v) return;
+  const amt = r2(v.amount);
+  if (v.mode === "free") addTx({ type: "earmark", amount: amt, date: todayStr(), goalId: g.id, note: "from " + b.name });
+  else if (v.mode === "unsorted") addTx({ type: "allocate", amount: 0, date: todayStr(), splits: [{ bucketId: b.id, goalId: g.id, amount: amt }], note: "Unsorted → " + g.name });
+  else addTx({ type: "earmark", amount: -amt, date: todayStr(), goalId: g.id, note: "back to " + b.name });
+  const after = goalProgress(g, derive());
+  await save({ xp: XP.allocate, msg: v.mode === "back" ? money0(amt) + " back in " + b.name : after.reached ? g.name + " is fully funded 🏆" : money0(after.remaining) + " to go for " + g.name, party: after.reached && !gp.reached });
 };
 
 act.payloan = async (el) => {
@@ -835,11 +866,10 @@ function bucketCard(b, d, compact) {
     const ok = need > 0 && bal >= need - 0.005;
     cls = ok ? "ok" : need > 0 ? "warn" : "";
     body = need > 0 ? `${bar(pct(bal, need), ok ? "good" : "warn")}<div class="sub">${ok ? "Funded" : money0(need - bal) + " short"} for this month's ${money0(need)}${b.bill?.dueDay ? " · due the " + ordinal(b.bill.dueDay) : ""}</div>` : `<div class="sub">Set a monthly amount to track funding</div>`;
-  } else if (goalForBucket(b.id)) {
-    const g = goalForBucket(b.id), gp = goalProgress(g, d);
-    cls = gp.done ? "ok" : "";
-    const pace = gp.done ? "" : gp.perPaycheck !== null ? ` · ${money0(gp.perPaycheck)} per paycheck to make it by ${fmtDate(g.date)}` : g.date && daysBetween(todayStr(), g.date) < 0 ? " · past the date" : gp.projected ? " · on pace for " + fmtDate(gp.projected) : "";
-    body = `${bar(gp.pct, gp.done ? "good" : "")}<div class="sub">${gp.done ? "Goal reached 🏆" : gp.pct.toFixed(0) + "% of " + money0(gp.target) + pace}</div>`;
+  } else if (goalsForBucket(b.id).length) {
+    const gs = goalsForBucket(b.id), free = d.free[b.id] || 0;
+    cls = free < -0.005 ? "warn" : "";
+    body = `<div class="mini-goals">${gs.map((g) => { const gp = goalProgress(g, d); return `<div class="mini-goal ${gp.reached ? "ok" : ""}"><span>${esc(g.emoji)} ${esc(g.name)}</span><i><b style="width:${gp.pct.toFixed(0)}%"></b></i><span>${money0(gp.alloc)}/${money0(gp.target)}</span></div>`; }).join("")}</div><div class="sub">${money0(free)} not earmarked${free < -0.005 ? " · goals claim more than the bucket holds" : ""}</div>`;
   } else if (b.kind === "spending") {
     body = `<div class="sub">${bal <= 0 ? "Empty until next paycheck" : "Free to spend"}${d.nextPayday ? " · next paycheck ~" + fmtDate(d.nextPayday) : ""}</div>`;
     cls = bal <= 0 ? "warn" : "";
@@ -855,18 +885,20 @@ function bucketCard(b, d, compact) {
 
 function goalCard(g, d, compact) {
   const gp = goalProgress(g, d);
-  const l = g.source?.type === "loan" ? loan(g.source.id) : null;
-  const pace = gp.done ? "Reached 🏆" : [
+  const b = bucket(g.bucketId);
+  const status = gp.used ? "Spent 🎉" : gp.reached ? "Fully funded 🏆" : [
     money0(gp.remaining) + " to go",
-    g.date ? (gp.perPaycheck !== null ? "need " + money0(gp.perPaycheck) + " per paycheck by " + fmtDate(g.date, true) : fmtDate(g.date, true) + " has passed") : null,
-    gp.projected ? "on pace for " + fmtDate(gp.projected, true) : gp.inflow === 0 && !gp.done && g.source?.type !== "net" ? "nothing flows in yet" : null,
+    g.date ? (gp.perPaycheck !== null ? "set aside " + money0(gp.perPaycheck) + " per paycheck by " + fmtDate(g.date, true) : fmtDate(g.date, true) + " has passed") : null,
+    gp.projected ? "on pace for " + fmtDate(gp.projected, true) : null,
   ].filter(Boolean).join(" · ");
-  return `<div class="goal ${gp.done ? "ok" : ""} ${compact ? "compact" : ""}" data-act="editGoal" data-goal="${g.id}" title="Edit goal">
+  const short = gp.used ? "Spent 🎉" : gp.reached ? "Funded 🏆" : money0(gp.remaining) + " to go" + (g.date ? " · by " + fmtDate(g.date) : "");
+  return `<div class="goal ${gp.reached ? "ok" : ""} ${compact ? "compact" : ""}" data-act="editGoal" data-goal="${g.id}" title="Edit goal">
     <div class="b-head"><span class="b-emoji">${esc(g.emoji)}</span><span class="b-name">${esc(g.name)}</span><span class="b-kind">${gp.pct.toFixed(0)}%</span></div>
-    ${compact ? "" : `<div class="g-nums"><b>${money(gp.current)}</b><span class="muted"> of ${money0(gp.target)}${l ? " paid down" : ""}</span></div>`}
-    ${bar(gp.pct, gp.done ? "good" : "gold")}
-    <div class="sub">${compact ? (gp.done ? "Reached 🏆" : money0(gp.remaining) + " to go" + (gp.projected ? " · ~" + fmtDate(gp.projected) : g.date ? " · by " + fmtDate(g.date) : "")) : pace}</div>
-    ${compact ? "" : `<div class="b-plan">Measures: ${esc(sourceLabel(g))}${g.note ? ` · <em>${esc(g.note)}</em>` : ""}</div>`}
+    ${compact ? "" : `<div class="g-nums"><b>${money(gp.alloc)}</b><span class="muted"> set aside of ${money0(gp.target)}${gp.spent ? " · " + money0(gp.spent) + " spent" : ""}</span></div>`}
+    ${bar(gp.pct, gp.reached ? "good" : "gold")}
+    <div class="sub">${compact ? short : status}</div>
+    ${compact ? "" : `<div class="b-plan">Inside ${b ? esc(b.emoji + " " + b.name) : "<span class='bad'>no bucket yet, click to pick one</span>"}${g.note ? ` · <em>${esc(g.note)}</em>` : ""}</div>
+    <div class="b-actions"><button type="button" class="btn small primary" data-act="fundGoal" data-goal="${g.id}">${gp.alloc > 0 ? "Add or take back" : "Add money"}</button><button type="button" class="btn small" data-act="expense" data-goal="${g.id}">Spent on this</button></div>`}
   </div>`;
 }
 
@@ -925,10 +957,13 @@ views.home = (d) => {
 
 views.goals = (d) => {
   const gs = S.db.goals;
-  const done = gs.filter((g) => goalProgress(g, d).done).length;
-  return `<header class="page-head"><div><h1>Goals</h1><p class="muted">Numbers you want to hit, even if you're not close yet. Each one watches a bucket, all your savings, your net cash, or a loan, and tells you the pace.</p></div><div class="quick"><button type="button" class="btn primary" data-act="editGoal">+ New goal</button></div></header>
-  ${gs.length ? `<div class="planline">${done} of ${gs.length} reached${d.avgPaycheck ? ` · pace estimates assume paychecks like your recent average of <b>${money0(d.avgPaycheck)}</b> and your current bucket plan` : " · log a paycheck or two and Cashmere will project dates"}</div>
-  <div class="goal-grid">${gs.map((g) => goalCard(g, d)).join("")}</div>` : `<div class="empty"><p>No goals yet. Try "Emergency fund $5,000", "Paris trip by June", or "Pay off the Apple loan".</p><button type="button" class="btn primary" data-act="editGoal">Set the first one</button></div>`}`;
+  const reached = gs.filter((g) => goalProgress(g, d).reached).length;
+  const groups = activeBuckets().filter((b) => goalsForBucket(b.id).length);
+  const orphans = gs.filter((g) => !bucket(g.bucketId));
+  const group = (b) => { const free = d.free[b.id] || 0; return `<div class="goal-group"><div class="gg-head"><b>${esc(b.emoji)} ${esc(b.name)}</b><span class="muted">holds ${money(d.bkt[b.id])} · ${money0(d.earmarked[b.id] || 0)} set aside for goals · <b class="${free < -0.005 ? "bad" : ""}">${money0(free)}</b> free</span><span class="spacer"></span><button type="button" class="btn small" data-act="editGoal" data-bucket="${b.id}">+ Goal here</button><button type="button" class="btn small" data-act="sort" data-bucket="${b.id}">Sort</button></div><div class="goal-grid">${goalsForBucket(b.id).map((g) => goalCard(g, d)).join("")}</div></div>`; };
+  return `<header class="page-head"><div><h1>Goals</h1><p class="muted">Goals live inside buckets. The bucket holds the money; a goal is a slice of it you set aside on purpose, like Flights and Tickets inside a trip bucket. Nothing counts toward a goal until you put it there, from the bucket's free money, from Unsorted, or straight from a paycheck.</p></div><div class="quick"><button type="button" class="btn primary" data-act="editGoal">+ New goal</button></div></header>
+  ${gs.length ? `<div class="planline">${reached} of ${gs.length} funded · click a goal to edit it, Add money to set some aside, Spent on this when you actually buy the thing.</div>
+  ${groups.map(group).join("")}${orphans.length ? `<div class="goal-group warn"><div class="gg-head"><b>Needs a bucket</b><span class="muted">these goals came from the old setup; click each and pick the bucket it lives in</span></div><div class="goal-grid">${orphans.map((g) => goalCard(g, d)).join("")}</div></div>` : ""}` : `<div class="empty"><p>No goals yet. Try "Flights $450 by March" inside your trip bucket, or "Laptop $1,200" inside Savings.</p><button type="button" class="btn primary" data-act="editGoal">Set the first one</button></div>`}`;
 };
 
 views.recurring = (d) => {
@@ -953,7 +988,7 @@ views.expenses = (d) => {
     const total = list.reduce((s, t) => s + t.amount, 0);
     const byCat = {}; list.forEach((t) => (byCat[t.category] = (byCat[t.category] || 0) + t.amount));
     return `<div class="week-group"><div class="wg-head"><b>Week of ${fmtDate(w)}</b><span class="muted">${cats().filter(([k]) => byCat[k]).map(([k, l]) => esc(l) + " " + money0(byCat[k])).join(" · ")}</span><b>${money(total)}</b></div>
-      ${list.map((t) => `<div class="tx"><span class="tx-date">${fmtDate(t.date)}</span><span class="tx-note">${esc(t.note || "(no note)")}<small>${bucket(t.bucketId) ? esc(bucket(t.bucketId).emoji + " " + bucket(t.bucketId).name) : "Unsorted"} · ${esc(acc(t.accountId)?.name || "?")}</small></span>${catPill(t.category)}<span class="tx-amt">${money(t.amount)}</span><button type="button" class="btn tiny" data-act="editTx" data-id="${t.id}">Edit</button><button type="button" class="btn tiny danger" data-act="deleteTx" data-id="${t.id}">Delete</button></div>`).join("")}</div>`;
+      ${list.map((t) => `<div class="tx"><span class="tx-date">${fmtDate(t.date)}</span><span class="tx-note">${esc(t.note || "(no note)")}<small>${bucket(t.bucketId) ? esc(bucket(t.bucketId).emoji + " " + bucket(t.bucketId).name) : "Unsorted"}${t.goalId && goal(t.goalId) ? " › " + esc(goal(t.goalId).name) : ""} · ${esc(acc(t.accountId)?.name || "?")}</small></span>${catPill(t.category)}<span class="tx-amt">${money(t.amount)}</span><button type="button" class="btn tiny" data-act="editTx" data-id="${t.id}">Edit</button><button type="button" class="btn tiny danger" data-act="deleteTx" data-id="${t.id}">Delete</button></div>`).join("")}</div>`;
   }).join("");
   return `<header class="page-head"><div><h1>Expenses</h1><p class="muted">Your weekly ritual: open the card app, log each purchase, pick the bucket it came out of.</p></div><div class="quick"><button type="button" class="btn primary" data-act="expense">+ Log expense</button></div></header>
   ${weekSummary(d)}
@@ -982,7 +1017,7 @@ views.paychecks = (d) => {
   <section class="stats three"><div class="stat"><span class="lbl">Logged</span><b>${list.length}</b><small>paychecks</small></div><div class="stat"><span class="lbl">Recent average</span><b>${money(avg)}</b><small>last ${Math.min(6, list.length) || 0}</small></div><div class="stat"><span class="lbl">This year</span><b>${money(ytd)}</b><small>net, year to date</small></div></section>
   <div class="planline">Current plan: ${activeBuckets().filter((b) => b.plan).map((b) => `${esc(b.emoji)} ${esc(b.name)} <b>${esc(planLabel(b).replace(" / paycheck", ""))}</b>`).join(" · ") || "no per-paycheck plan yet. Edit a bucket to set one."}</div>
   ${list.map((t) => `<div class="pc"><div class="pc-head"><b>${fmtDate(t.date, true)}</b><span class="muted">${esc(t.note || "")} → ${esc(acc(t.accountId)?.name || "")}</span><b>${money(t.amount)}</b><button type="button" class="btn tiny danger" data-act="deleteTx" data-id="${t.id}">Delete</button></div>
-    <div class="pc-splits">${(t.splits || []).map((s) => `<span class="pill">${esc(bucket(s.bucketId)?.emoji || "")} ${esc(bucket(s.bucketId)?.name || "deleted bucket")} ${money0(s.amount)}</span>`).join("")}${r2(t.amount - (t.splits || []).reduce((s, x) => s + x.amount, 0)) > 0 ? `<span class="pill ghost">Unsorted ${money0(t.amount - (t.splits || []).reduce((s, x) => s + x.amount, 0))}</span>` : ""}</div></div>`).join("") || `<div class="empty"><p>No paychecks logged yet.</p><button type="button" class="btn primary" data-act="paycheck">Log the first one</button></div>`}`;
+    <div class="pc-splits">${(t.splits || []).map((s) => `<span class="pill">${esc(bucket(s.bucketId)?.emoji || "")} ${esc(bucket(s.bucketId)?.name || "deleted bucket")}${s.goalId && goal(s.goalId) ? " › " + esc(goal(s.goalId).name) : ""} ${money0(s.amount)}</span>`).join("")}${r2(t.amount - (t.splits || []).reduce((s, x) => s + x.amount, 0)) > 0 ? `<span class="pill ghost">Unsorted ${money0(t.amount - (t.splits || []).reduce((s, x) => s + x.amount, 0))}</span>` : ""}</div></div>`).join("") || `<div class="empty"><p>No paychecks logged yet.</p><button type="button" class="btn primary" data-act="paycheck">Log the first one</button></div>`}`;
 };
 
 views.loans = (d) => {
@@ -1117,7 +1152,7 @@ async function runSetup() {
       keepB.add(b.id);
     }
     S.db.buckets = S.db.buckets.filter((b) => keepB.has(b.id));
-    S.db.goals = S.db.goals.filter((g) => g.source?.type !== "bucket" || keepB.has(g.source.id));
+    S.db.goals = S.db.goals.filter((g) => keepB.has(g.bucketId));
     let seenRest = false; for (const b of S.db.buckets) if (b.plan?.remainder) { if (seenRest) b.plan = null; seenRest = true; }
     await window.cashmere.saveDb(S.db);
   }
@@ -1141,7 +1176,7 @@ async function runSetup() {
         { key: "accountId", label: "Paid with", type: "select", options: payOpts },
       ],
       rows: loanRows, blank: { name: "", balance: "", rate: "", minPayment: "", dueDay: 1, accountId: mainAccount()?.id },
-      submit: "Next: sort your money", cancelLabel: "Skip", addLabel: "+ Add loan",
+      submit: "Next: sort your money", cancelLabel: "No loans, skip", addLabel: "+ Add loan",
     });
     if (ls) {
       const loansBucket = S.db.buckets.find((b) => /loan|debt/i.test(b.name))?.id || null;
@@ -1174,10 +1209,17 @@ async function boot() {
   // Migrate bucket-level goals (v1) into the goals list.
   let migrated = false;
   if (!Array.isArray(S.db.goals)) { S.db.goals = []; migrated = true; }
+  // Goals v3: a goal is a slice of one bucket. Old "source" goals become bucket goals (or need a bucket picked).
+  for (const g of S.db.goals) if (g.source || !("bucketId" in g)) {
+    g.bucketId = g.source?.type === "bucket" ? g.source.id : null; delete g.source; delete g.start; migrated = true;
+    // A goal that used to measure its whole bucket keeps its current progress: earmark what the bucket holds (up to the target).
+    const b = g.bucketId ? bucket(g.bucketId) : null;
+    if (b && b.name === g.name) { const have = derive().bkt[b.id] || 0; const amt = r2(Math.min(have, g.target || 0)); if (amt > 0) addTx({ type: "earmark", amount: amt, date: todayStr(), goalId: g.id, note: "migrated: this goal used to count the whole bucket" }); }
+  }
   if (!Array.isArray(S.db.recurring)) { S.db.recurring = []; migrated = true; }
   if (!Array.isArray(S.db.accounts)) { S.db.accounts = []; migrated = true; }
   if (!Array.isArray(S.db.categories) || !S.db.categories.length) { S.db.categories = DEFAULT_CATS.map((c) => ({ ...c })); migrated = true; }
-  for (const b of S.db.buckets) if (b.goal && b.goal.amount > 0) { S.db.goals.push({ id: uid(), created: todayStr(), emoji: b.emoji, name: b.name, source: { type: "bucket", id: b.id }, target: r2(b.goal.amount), date: b.goal.date || null, note: "" }); delete b.goal; migrated = true; }
+  for (const b of S.db.buckets) if (b.goal && b.goal.amount > 0) { S.db.goals.push({ id: uid(), created: todayStr(), emoji: b.emoji, name: b.name, bucketId: b.id, target: r2(b.goal.amount), date: b.goal.date || null, note: "" }); delete b.goal; migrated = true; }
   if (migrated && !S.error) await window.cashmere.saveDb(S.db);
   const [hash, flag, testAct] = location.hash.replace("#", "").split("!");
   if (views[hash]) S.view = hash;

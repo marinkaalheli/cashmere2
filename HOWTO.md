@@ -33,7 +33,7 @@ All the money you have, minus what you owe on credit cards, is split into bucket
 | Paycheck | Money in. You split it into buckets on the spot, or leave some Unsorted and sort it later. |
 | Expense | Money out. It comes out of a bucket. If you paid by card, the card's owed amount goes up at the same time. |
 | Pay a card | Moves cash from a bank account to the card. Buckets don't change, because they already dropped when you logged the purchases. |
-| Goal | A number you want a bucket (or all your savings, or your net cash) to reach, with the pace to get there. |
+| Goal | A slice of a bucket you set aside on purpose: "Flights $450 by March" inside your trip bucket. Only money you put into it counts. |
 
 Two things people find surprising at first:
 
@@ -70,7 +70,7 @@ If you skip a week, nothing breaks. Log the missed purchases with their real dat
 | Expenses | The weekly log, grouped by week with totals per category. Filter by category, edit or delete any entry. | Deleting an entry puts the money back in its bucket and off the card. |
 | Recurring | Subscriptions and repeat buys: rent, Netflix, moisturizer every 6 weeks, cheese every 5 days. Shows next date, true cost per month, and the yearly total of all of them. | Bought it logs the expense and rolls the date forward. Skip just rolls the date. Items due within 10 days also appear on the Overview. |
 | Buckets | Every bucket with its balance, plan, and status. Click a bucket to edit it, Sort to move money in or out, Spend or Pay to log from it. | A bill bucket shows Funded or how much short it is for this month. Deleting a bucket sends its money to Unsorted. |
-| Goals | Numbers you want to hit. Each watches one bucket, all savings buckets combined, cash minus card debt, or a loan's payoff. | Shows amount to go, the per-paycheck pace to hit your date, and the date you're on track for at your recent rate. |
+| Goals | Slices inside a bucket, grouped by bucket. Add money sets some aside from the bucket's free money or from Unsorted; Spent on this logs the purchase against the goal. | Shows amount to go, the per-paycheck pace to hit your date, and the date you're on track for. The paycheck dialog has a row per goal too. |
 | Paychecks | Log a paycheck and see the history with how each one was split. | The split dialog hints what each bucket usually gets and what a goal needs per check. |
 | Loans | Balance, rate, monthly payment, payoff estimate, and which bucket funds it. Log payments here. | Interest is an estimate. Once a month, open the loan and type the balance from your statement. |
 | Accounts | Bank accounts and cards. Add, rename, delete, set a balance to match the bank, transfer between accounts, pay a card. | A card shows its next due date. Pay in full is one click. |
@@ -83,7 +83,7 @@ Everything with a name in this app is yours to change.
 - **Accounts**: Accounts tab, Add account. Any number of bank accounts and cards. Delete one from its Edit dialog (only if it has no history yet; otherwise rename it).
 - **Buckets**: Buckets tab, New bucket. Pick an emoji, a name, a kind, and optionally a per-paycheck plan, a monthly bill amount and due day, and a note to yourself about why it exists.
 - **Categories**: The Vault, Edit categories. The defaults are Fun, Necessary, Food, Shopping. Rename them, add Pets or Kids or Car, delete what you don't use. Removed categories hand their expenses to the first one in the list.
-- **Goals**: Goals tab, New goal. A goal doesn't need to match a bucket. "Net cash $10,000" or "Savings $5,000 by June" work fine.
+- **Goals**: Goals tab, New goal, or "+ Goal here" on any bucket. A bucket can hold several goals: a trip bucket with Flights, Hotel and Tickets, each with its own target and date.
 - **Recurring**: anything with a rhythm. Rent monthly, gym every 4 weeks, coffee beans every 10 days, dog food every 6 weeks. Each one can come out of a bucket so your buckets stay honest.
 - **The whole setup**: The Vault, Re-run setup. It opens the same tables with your current accounts, buckets and loans filled in.
 
@@ -91,7 +91,7 @@ A few ways people set it up:
 
 - **Simple**: one checking account, one card. Buckets: Bills, Food, Fun, Savings. Rent as a recurring item. Done.
 - **Envelope style**: a Spending bucket per weakness (Takeout, Clothes, Going out) with a fixed amount per paycheck. When it's empty, it's empty.
-- **Goal driven**: one big Savings bucket with `rest` as its plan, and three or four goals watching it with dates.
+- **Goal driven**: one big Savings bucket with `rest` as its plan, and three or four goals inside it with dates. Each paycheck, put money straight into the goal rows.
 
 ## Tips, shortcuts and troubleshooting
 

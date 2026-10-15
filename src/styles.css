@@ -219,3 +219,15 @@ table.rows input[type=radio], table.rows input[type=checkbox] { width: 18px; hei
 .due.soon { background: #fff6df; }
 .b-actions.nowrap { flex-wrap: nowrap; margin-top: 0; }
 .week { gap: 6px; }
+
+.mini-goals { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.mini-goal { display: grid; grid-template-columns: 1fr 70px auto; gap: 8px; align-items: center; font-size: 12px; }
+.mini-goal span:last-child { color: var(--muted); font-variant-numeric: tabular-nums; }
+.mini-goal i { display: block; height: 6px; background: #eee5d8; border-radius: 999px; overflow: hidden; }
+.mini-goal i b { display: block; height: 100%; background: var(--gold); border-radius: 999px; }
+.mini-goal.ok i b { background: var(--sage-deep); }
+.goal-group { margin-bottom: 18px; }
+.goal-group.warn .gg-head { background: #fdf0ec; }
+.gg-head { display: flex; gap: 12px; align-items: center; background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; margin-bottom: 8px; font-size: 13px; }
+tr.goal-row td { font-size: 13px; color: var(--muted); border-bottom-style: dashed; }
+tr.goal-row td:first-child { color: var(--ink); }
